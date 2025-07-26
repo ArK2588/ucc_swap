@@ -56,5 +56,10 @@
   "packageManager": "yarn@3.2.3",
   "engines": {
     "node": ">=20.18.3"
+  },
+  "dependencies": {
+    "@tronprotocol/wallet-api": "^0.0.37",
+    "tronbox": "^4.2.1",
+    "tronweb": "^6.0.3"
   }
 }
