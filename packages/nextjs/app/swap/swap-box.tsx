@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useAccount } from "wagmi";
+import { formatEther } from "viem";
+import { useAccount, useBalance } from "wagmi";
 import { Balance } from "~~/components/scaffold-eth";
+import { useSpotPrice } from "~~/hooks/useSpotPrice";
 
 const SwapBox = () => {
   const [fromToken, setFromToken] = useState({
@@ -18,16 +20,79 @@ const SwapBox = () => {
   });
 
   const [isClient, setIsClient] = useState(false);
+  const [inputError, setInputError] = useState<string | null>(null);
   const { address: connectedAddress } = useAccount();
+
+  // Get user's ETH balance
+  const { data: balance } = useBalance({
+    address: connectedAddress,
+  });
+
+  // Get real-time ETH price for supported networks
+  const {
+    loading: priceLoading,
+    error: priceError,
+    usdValue,
+  } = useSpotPrice(fromToken.symbol, fromToken.chain.toLowerCase(), fromToken.amount);
+
+  // Check if current network supports 1inch Spot Price API
+  const supportedNetworks = [
+    "ethereum",
+    "arbitrum",
+    "avalanche",
+    "bnb",
+    "gnosis",
+    "solana",
+    "sonic",
+    "optimism",
+    "polygon",
+    "zksync",
+    "base",
+    "linea",
+    "unichain",
+  ];
+  const isNetworkSupported = supportedNetworks.includes(fromToken.chain.toLowerCase());
 
   useEffect(() => {
     setIsClient(true);
   }, []);
 
-  // TODO: Initialize token balance hook once we have a token contract
-  // For now, we'll use the connectedAddress to show ETH balance
+  // Input validation functions
+  const validateNumberInput = (value: string): string => {
+    // Allow empty string, numbers, and single decimal point
+    const regex = /^$|^\d*\.?\d*$/;
+    if (!regex.test(value)) {
+      return fromToken.amount; // Return previous valid value
+    }
+    return value;
+  };
+
+  const checkInsufficientFunds = (amount: string): void => {
+    if (!amount || !balance || parseFloat(amount) <= 0) {
+      setInputError(null);
+      return;
+    }
+
+    const inputAmount = parseFloat(amount);
+    const balanceInEth = parseFloat(formatEther(balance.value));
+
+    if (inputAmount > balanceInEth) {
+      setInputError("Insufficient funds");
+    } else {
+      setInputError(null);
+    }
+  };
+
+  const handleAmountChange = (value: string) => {
+    const validatedValue = validateNumberInput(value);
+    setFromToken({ ...fromToken, amount: validatedValue });
+    checkInsufficientFunds(validatedValue);
+  };
 
   const handleSwap = () => {
+    if (inputError) {
+      return; // Don't allow swap if there's an error
+    }
     // Will implement swap logic later
     console.log("Initiating swap:", { fromToken, toToken });
   };
@@ -59,9 +124,17 @@ const SwapBox = () => {
               <input
                 type="text"
                 placeholder="0.0"
-                className="input input-ghost w-full text-2xl font-semibold p-0 focus:outline-none"
+                className={`input input-ghost w-full text-2xl font-semibold p-0 focus:outline-none ${
+                  inputError ? "text-error" : ""
+                }`}
                 value={fromToken.amount}
-                onChange={e => setFromToken({ ...fromToken, amount: e.target.value })}
+                onChange={e => handleAmountChange(e.target.value)}
+                onKeyPress={e => {
+                  // Allow only numbers, decimal point, and control keys
+                  if (!/[0-9.]/.test(e.key) && !["Backspace", "Delete", "Tab", "Enter"].includes(e.key)) {
+                    e.preventDefault();
+                  }
+                }}
               />
               <div className="dropdown dropdown-end">
                 <label tabIndex={0} className="btn btn-sm btn-outline">
@@ -69,18 +142,54 @@ const SwapBox = () => {
                 </label>
                 <ul tabIndex={0} className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52">
                   <li>
-                    <button onClick={() => setFromToken({ ...fromToken, symbol: "ETH" })}>ETH</button>
+                    <button onClick={() => setFromToken({ ...fromToken, symbol: "ETH", chain: "Ethereum" })}>
+                      ETH (Ethereum)
+                    </button>
                   </li>
                   <li>
-                    <button onClick={() => setFromToken({ ...fromToken, symbol: "USDT" })}>USDT</button>
+                    <button onClick={() => setFromToken({ ...fromToken, symbol: "ETH", chain: "Arbitrum" })}>
+                      ETH (Arbitrum)
+                    </button>
+                  </li>
+                  <li>
+                    <button onClick={() => setFromToken({ ...fromToken, symbol: "ETH", chain: "Polygon" })}>
+                      ETH (Polygon)
+                    </button>
+                  </li>
+                  <li>
+                    <button onClick={() => setFromToken({ ...fromToken, symbol: "USDT", chain: "Ethereum" })}>
+                      USDT (Ethereum)
+                    </button>
                   </li>
                 </ul>
               </div>
             </div>
             <div className="flex justify-between mt-2">
               <span className="text-sm text-gray-500">{fromToken.chain}</span>
-              <span className="text-sm text-gray-500">~$0.00</span>
+              <div className="flex items-center">
+                {priceLoading && fromToken.amount && parseFloat(fromToken.amount) > 0 ? (
+                  <span className="loading loading-spinner loading-xs mr-1"></span>
+                ) : null}
+                <span className="text-sm text-gray-500">
+                  {isNetworkSupported && fromToken.symbol === "ETH" ? (
+                    priceError ? (
+                      <span className="text-error">Price unavailable</span>
+                    ) : (
+                      `~$${usdValue}`
+                    )
+                  ) : fromToken.chain === "Tron" ? (
+                    <span className="text-warning">Tron price coming soon</span>
+                  ) : (
+                    "~$0.00"
+                  )}
+                </span>
+              </div>
             </div>
+            {inputError && (
+              <div className="mt-2">
+                <span className="text-error text-sm font-medium">{inputError}</span>
+              </div>
+            )}
           </div>
 
           {/* Swap Direction Button */}
@@ -136,9 +245,9 @@ const SwapBox = () => {
             <button
               className="btn btn-primary w-full"
               onClick={handleSwap}
-              disabled={!fromToken.amount || !toToken.amount}
+              disabled={!fromToken.amount || !toToken.amount || !!inputError}
             >
-              Swap
+              {inputError ? "Insufficient Funds" : "Swap"}
             </button>
           )}
         </div>
