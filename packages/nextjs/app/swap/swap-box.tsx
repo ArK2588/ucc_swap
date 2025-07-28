@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { formatEther } from "viem";
 import { useAccount, useBalance } from "wagmi";
 import { Balance } from "~~/components/scaffold-eth";
-import { useCoinGeckoPrice } from "~~/hooks/useCoinGeckoPrice";
 import { useSpotPrice } from "~~/hooks/useSpotPrice";
+import { useTokenPrice } from "~~/hooks/useTokenPrice";
 
 const SwapBox = () => {
   const [fromToken, setFromToken] = useState({
@@ -29,56 +29,100 @@ const SwapBox = () => {
     address: connectedAddress,
   });
 
-  // Get real-time ETH price from 1inch API
+  // Get price from 1inch API when ETH is in input field
   const {
-    loading: priceLoading,
-    error: priceError,
-    usdValue,
-    price: ethPrice,
-  } = useSpotPrice(fromToken.symbol, fromToken.chain.toLowerCase(), fromToken.amount);
+    loading: ethPriceLoading,
+    error: ethPriceError,
+    price: ethPriceFrom1inch,
+  } = useSpotPrice(
+    fromToken.symbol === "ETH" ? fromToken.symbol : "ETH",
+    fromToken.symbol === "ETH" ? fromToken.chain.toLowerCase() : "ethereum",
+    fromToken.symbol === "ETH" ? fromToken.amount : "1",
+  );
 
-  // Get TRON price from CoinGecko for cross-chain calculation
-  const { tronPrice, loading: coinGeckoLoading, error: coinGeckoError, calculateTronAmount } = useCoinGeckoPrice();
+  // Get TRON price from CoinGecko (always needed for calculations)
+  const { price: tronPriceFromCoinGecko, loading: tronPriceLoading, error: tronPriceError } = useTokenPrice("TRX");
 
-  // Check if current network supports 1inch Spot Price API
-  const supportedNetworks = [
-    "ethereum",
-    "arbitrum",
-    "avalanche",
-    "bnb",
-    "gnosis",
-    "solana",
-    "sonic",
-    "optimism",
-    "polygon",
-    "zksync",
-    "base",
-    "linea",
-    "unichain",
-  ];
-  const isNetworkSupported = supportedNetworks.includes(fromToken.chain.toLowerCase());
+  // Get ETH price from CoinGecko (needed when TRON is input)
+  const { price: ethPriceFromCoinGecko, loading: ethCoinGeckoLoading, error: ethCoinGeckoError } = useTokenPrice("ETH");
+
+  // Determine which prices to use based on input token
+  const inputPrice = fromToken.symbol === "ETH" ? ethPriceFrom1inch : tronPriceFromCoinGecko;
+  const outputPrice = toToken.symbol === "ETH" ? ethPriceFromCoinGecko : tronPriceFromCoinGecko;
+  const inputPriceLoading = fromToken.symbol === "ETH" ? ethPriceLoading : tronPriceLoading;
+  const inputPriceError = fromToken.symbol === "ETH" ? ethPriceError : tronPriceError;
+  const outputPriceLoading = toToken.symbol === "ETH" ? ethCoinGeckoLoading : tronPriceLoading;
+  const outputPriceError = toToken.symbol === "ETH" ? ethCoinGeckoError : tronPriceError;
+
+  // // Network support check (kept for future use)
+  // const _isNetworkSupported = [
+  //   "ethereum",
+  //   "arbitrum",
+  //   "avalanche",
+  //   "bnb",
+  //   "gnosis",
+  //   "solana",
+  //   "sonic",
+  //   "optimism",
+  //   "polygon",
+  //   "zksync",
+  //   "base",
+  //   "linea",
+  //   "unichain",
+  // ].includes(fromToken.chain.toLowerCase());
 
   useEffect(() => {
     setIsClient(true);
   }, []);
 
-  // Update TRON amount when ETH price changes or when fromToken.amount changes
+  // Calculate output amount when input changes
+  const calculateOutputAmount = useCallback(
+    (inputAmount: string, inputTokenPrice: number, outputTokenPrice: number): string => {
+      if (!inputAmount || !inputTokenPrice || !outputTokenPrice || parseFloat(inputAmount) <= 0) {
+        return "0.00";
+      }
+
+      const inputValue = parseFloat(inputAmount);
+      const inputUsdValue = inputValue * inputTokenPrice;
+      const outputAmount = inputUsdValue / outputTokenPrice;
+
+      return outputAmount.toFixed(6);
+    },
+    [],
+  );
+
+  // Update output amount when input changes or prices change
   useEffect(() => {
-    // Only proceed if we have all required values and we're in the correct token pair
-    if (fromToken.symbol === "ETH" && toToken.symbol === "TRX" && fromToken.amount && ethPrice && !priceLoading) {
-      console.log("Recalculating TRON amount due to ETH price change:", { ethPrice, amount: fromToken.amount });
-      const tronAmount = calculateTronAmount(fromToken.amount, ethPrice);
+    if (fromToken.amount && inputPrice && outputPrice && !inputPriceLoading && !outputPriceLoading) {
+      console.log("Recalculating output amount:", {
+        fromSymbol: fromToken.symbol,
+        toSymbol: toToken.symbol,
+        amount: fromToken.amount,
+        inputPrice,
+        outputPrice,
+      });
+
+      const outputAmount = calculateOutputAmount(fromToken.amount, inputPrice, outputPrice);
 
       // Only update if the amount has actually changed
       setToToken(prev => {
-        if (prev.amount === tronAmount) return prev;
+        if (prev.amount === outputAmount) return prev;
         return {
           ...prev,
-          amount: tronAmount,
+          amount: outputAmount,
         };
       });
     }
-  }, [ethPrice, fromToken.amount, fromToken.symbol, toToken.symbol, priceLoading, calculateTronAmount]);
+  }, [
+    fromToken.amount,
+    fromToken.symbol,
+    toToken.symbol,
+    inputPrice,
+    outputPrice,
+    inputPriceLoading,
+    outputPriceLoading,
+    calculateOutputAmount,
+  ]);
 
   // Input validation functions
   const validateNumberInput = (value: string): string => {
@@ -118,8 +162,8 @@ const SwapBox = () => {
       fromSymbol: fromToken.symbol,
       toSymbol: toToken.symbol,
       validatedValue,
-      ethPrice,
-      tronPrice,
+      inputPrice,
+      outputPrice,
     });
 
     // Clear TRX amount if input is empty
@@ -133,22 +177,38 @@ const SwapBox = () => {
 
   const handleFromTokenChange = (symbol: string, chain: string) => {
     setFromToken({ ...fromToken, symbol, chain });
-    // Recalculate if switching to ETH with TRX target
-    if (symbol === "ETH" && toToken.symbol === "TRX" && fromToken.amount && ethPrice) {
-      const tronAmount = calculateTronAmount(fromToken.amount, ethPrice);
-      setToToken({ ...toToken, amount: tronAmount });
-    }
+    // Clear amounts when switching tokens to avoid confusion
+    setToToken({ ...toToken, amount: "" });
   };
 
   const handleToTokenChange = (symbol: string) => {
     setToToken({ ...toToken, symbol });
-    // Recalculate if switching to TRX with ETH source
-    if (fromToken.symbol === "ETH" && symbol === "TRX" && fromToken.amount && ethPrice) {
-      const tronAmount = calculateTronAmount(fromToken.amount, ethPrice);
-      setToToken({ ...toToken, symbol, amount: tronAmount });
-    } else {
-      setToToken({ ...toToken, symbol, amount: "" });
-    }
+    // Clear amounts when switching tokens to avoid confusion
+    setToToken({ ...toToken, symbol, amount: "" });
+  };
+
+  const handleSwapDirection = () => {
+    console.log("Swapping direction:", { from: fromToken, to: toToken });
+
+    // Store current values
+    const tempFromToken = { ...fromToken };
+    const tempToToken = { ...toToken };
+
+    // Swap the tokens
+    setFromToken({
+      amount: tempToToken.amount,
+      symbol: tempToToken.symbol,
+      chain: tempToToken.chain,
+    });
+
+    setToToken({
+      amount: tempFromToken.amount,
+      symbol: tempFromToken.symbol,
+      chain: tempFromToken.chain,
+    });
+
+    // Clear any input errors when swapping
+    setInputError(null);
   };
 
   const handleSwap = () => {
@@ -199,7 +259,7 @@ const SwapBox = () => {
                     }
                   }}
                 />
-                {priceLoading && fromToken.amount && (
+                {inputPriceLoading && fromToken.amount && (
                   <span className="absolute right-12 top-1/2 -translate-y-1/2">
                     <span className="loading loading-spinner loading-xs"></span>
                   </span>
@@ -222,26 +282,18 @@ const SwapBox = () => {
             <div className="flex justify-between mt-2">
               <span className="text-sm text-gray-500">{fromToken.chain}</span>
               <div className="flex items-center">
-                {priceLoading && fromToken.amount && parseFloat(fromToken.amount) > 0 ? (
+                {inputPriceLoading && fromToken.amount && parseFloat(fromToken.amount) > 0 ? (
                   <span className="flex items-center text-sm text-gray-500">
                     <span className="loading loading-spinner loading-xs mr-1"></span>
                     Fetching price...
                   </span>
-                ) : priceError ? (
+                ) : inputPriceError ? (
                   <span className="text-error text-sm">Price unavailable</span>
                 ) : (
                   <span className="text-sm text-gray-500">
-                    {isNetworkSupported && fromToken.symbol === "ETH" ? (
-                      usdValue ? (
-                        `~$${usdValue}`
-                      ) : (
-                        "~$0.00"
-                      )
-                    ) : fromToken.chain === "Tron" ? (
-                      <span className="text-warning">Tron price coming soon</span>
-                    ) : (
-                      "~$0.00"
-                    )}
+                    {fromToken.amount && inputPrice
+                      ? `~$${(parseFloat(fromToken.amount) * inputPrice).toFixed(2)}`
+                      : "~$0.00"}
                   </span>
                 )}
               </div>
@@ -255,13 +307,20 @@ const SwapBox = () => {
 
           {/* Swap Direction Button */}
           <div className="flex justify-center my-2">
-            <button className="btn btn-circle btn-sm">
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                <path
-                  fillRule="evenodd"
-                  d="M15.707 4.293a1 1 0 010 1.414L9.414 12l6.293 6.293a1 1 0 01-1.414 1.414l-7-7a1 1 0 010-1.414l7-7a1 1 0 011.414 0z"
-                  clipRule="evenodd"
-                />
+            <button
+              className="btn btn-circle btn-sm hover:btn-primary transition-colors"
+              onClick={handleSwapDirection}
+              title="Swap direction"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-5 w-5"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <path d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4" />
               </svg>
             </button>
           </div>
@@ -270,7 +329,7 @@ const SwapBox = () => {
           <div className="bg-base-200 rounded-xl p-4 mb-6">
             <div className="flex justify-between items-center mb-2">
               <span className="text-sm font-medium text-gray-500">You receive</span>
-              {coinGeckoLoading && fromToken.amount && fromToken.symbol === "ETH" && toToken.symbol === "TRX" && (
+              {outputPriceLoading && fromToken.amount && (
                 <span className="text-xs text-gray-400 flex items-center">
                   <span className="loading loading-spinner loading-xs mr-1"></span>
                   Calculating...
@@ -285,9 +344,9 @@ const SwapBox = () => {
                   className="input input-ghost w-full text-2xl font-semibold p-0 focus:outline-none"
                   value={toToken.amount}
                   onChange={e => setToToken({ ...toToken, amount: e.target.value })}
-                  readOnly={fromToken.symbol === "ETH" && toToken.symbol === "TRX"}
+                  readOnly={true}
                 />
-                {coinGeckoLoading && fromToken.amount && fromToken.symbol === "ETH" && toToken.symbol === "TRX" && (
+                {outputPriceLoading && fromToken.amount && (
                   <span className="absolute right-12 top-1/2 -translate-y-1/2">
                     <span className="loading loading-spinner loading-xs"></span>
                   </span>
@@ -310,15 +369,17 @@ const SwapBox = () => {
             <div className="flex justify-between mt-2">
               <span className="text-sm text-gray-500">{toToken.chain}</span>
               <div className="flex items-center">
-                {coinGeckoLoading && fromToken.symbol === "ETH" && toToken.symbol === "TRX" && fromToken.amount ? (
+                {outputPriceLoading && fromToken.amount ? (
                   <span className="flex items-center text-sm text-gray-500">
                     <span className="loading loading-spinner loading-xs mr-1"></span>
                     Fetching price...
                   </span>
-                ) : coinGeckoError ? (
+                ) : outputPriceError ? (
                   <span className="text-error text-sm">Price unavailable</span>
-                ) : toToken.symbol === "TRX" && tronPrice && toToken.amount ? (
-                  <span className="text-sm text-gray-500">~${(parseFloat(toToken.amount) * tronPrice).toFixed(2)}</span>
+                ) : toToken.amount && outputPrice ? (
+                  <span className="text-sm text-gray-500">
+                    ~${(parseFloat(toToken.amount) * outputPrice).toFixed(2)}
+                  </span>
                 ) : (
                   <span className="text-sm text-gray-500">~$0.00</span>
                 )}
