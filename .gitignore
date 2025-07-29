@@ -21,3 +21,13 @@ node_modules
 
 # cli
 dist
+
+# any pdf
+*.pdf
+
+example_contracts/*
+
+
+tron/*
+
+sync.sh

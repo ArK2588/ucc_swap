@@ -58,8 +58,9 @@
     "node": ">=20.18.3"
   },
   "dependencies": {
+    "@ethersproject/providers": "5.8.0",
     "@tronprotocol/wallet-api": "^0.0.37",
-    "tronbox": "^4.2.1",
+    "tronbox": "^2.7.4",
     "tronweb": "^6.0.3"
   }
 }
